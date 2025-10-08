@@ -1,0 +1,50 @@
+{
+    "strategy_name": "jebanaCL",
+    "params": {
+      "roi": {
+        "0": 0.1
+      },
+      "stoploss": {
+        "stoploss": -0.99
+      },
+      "trailing": {
+        "trailing_stop": false,
+        "trailing_stop_positive": null,
+        "trailing_stop_positive_offset": 0.0,
+        "trailing_only_offset_is_reached": false
+      },
+      "max_open_trades": {
+        "max_open_trades": 10
+      },
+      "buy": {
+        "cexit_min_profit_th": 0.3,
+        "enable_bb_check": true,
+        "enable_guard_metric": false,
+        "enable_squeeze": false,
+        "entry_bb_factor": 0.72,
+        "entry_bb_width": 0.065,
+        "entry_guard_metric": -0.2,
+        "leverage_amount": 10,
+        "liq_z_win": 332,
+        "oi_ema": 42,
+        "oi_win": 58,
+        "oi_z_win": 383,
+        "trades_ema": 49,
+        "trades_win": 65,
+        "trades_z_win": 466,
+        "ts_n_loss_std": 0.04,
+        "ts_n_profit_std": 1.8,
+        "use_liq": true,
+        "use_micro": true
+      },
+      "sell": {
+        "ce_len": 32,
+        "ce_mult": 1.56,
+        "cexit_min_loss_th": 0.0,
+        "rr_target": 1.69
+      },
+      "protection": {}
+    },
+    "ft_stratparam_v": 1,
+    "export_time": "2025-10-04 18:52:12.723243+00:00"
+  }
