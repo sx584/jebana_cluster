@@ -5,11 +5,6 @@
 !/.gitignore
 !*/
 
-# Do NOT include embedded repos
-/consumer_L
-/jebana_origin
-/jebana_test
-
 # Allow any user_data directories
 !**/user_data/
 
