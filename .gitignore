@@ -1,0 +1,13 @@
+# Ignore everything by default
+*
+
+# Track only the root .gitignore
+!/.gitignore
+
+# Allow traversal and inclusion for any user_data paths
+!**/user_data/
+!**/user_data/strategies/
+
+# Whitelist: strategies contents and top-level JSONs in user_data
+!**/user_data/strategies/**
+!**/user_data/*.json
