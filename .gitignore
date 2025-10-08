@@ -4,10 +4,18 @@
 # Track only the root .gitignore
 !/.gitignore
 
-# Allow traversal and inclusion for any user_data paths
+# Allow descending into directories
+!*/
+
+# Allow traversal to user_data
 !**/user_data/
 !**/user_data/strategies/
 
 # Whitelist: strategies contents and top-level JSONs in user_data
 !**/user_data/strategies/**
 !**/user_data/*.json
+
+# Ignore Python caches and compiled files
+**/__pycache__/
+**/*.pyc
+**/*.pyo
