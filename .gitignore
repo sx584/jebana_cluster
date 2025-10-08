@@ -3,19 +3,25 @@
 
 # Track only the root .gitignore
 !/.gitignore
-
-# Allow descending into directories
 !*/
 
-# Allow traversal to user_data
-!**/user_data/
-!**/user_data/strategies/
+# Do NOT include embedded repos
+/consumer_L
+/jebana_origin
+/jebana_test
 
-# Whitelist: strategies contents and top-level JSONs in user_data
+# Allow any user_data directories
+!**/user_data/
+
+# Start by ignoring everything inside user_data
+**/user_data/**
+
+# Re-allow ONLY strategies and top-level JSONs in user_data
+!**/user_data/strategies/
 !**/user_data/strategies/**
 !**/user_data/*.json
 
-# Ignore Python caches and compiled files
+# Ignore Python caches
 **/__pycache__/
 **/*.pyc
 **/*.pyo
