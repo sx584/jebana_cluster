@@ -20,3 +20,7 @@
 **/__pycache__/
 **/*.pyc
 **/*.pyo
+
+# Ignore nested Git metadata
+**/.git
+**/.git/**
