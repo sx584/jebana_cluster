@@ -33,7 +33,7 @@ log = logging.getLogger(__name__)
 class jebana_FE(IStrategy):
     
     # Hyperoptbare Parameter (aus der ursprünglichen jebana)
-    ts_n_profit_std = DecimalParameter(0.0, 3.0, decimals=2, default=2.0, space="buy")
+    ts_n_profit_std = DecimalParameter(0.0, 3.0, decimals=2, default=1.0, space="buy")
     ts_n_loss_std = DecimalParameter(0.0, 3.0, decimals=2, default=1.0, space="buy")
     
     # Chandelier-Parameter
@@ -93,7 +93,7 @@ class jebana_FE(IStrategy):
     col_oi = "oi_avg"
     
     # Strategy Parameter
-    minimal_roi = {"0": 0.1}
+    minimal_roi = {"0": 1}
     stoploss = -0.99
     trailing_stop = False
     use_custom_stoploss = True
@@ -102,6 +102,46 @@ class jebana_FE(IStrategy):
     timeframe = "5m"
     startup_candle_count = 600
     timeframe_minutes = timeframe_to_minutes(timeframe)
+
+    plot_config = {
+    "main_plot": {
+        "ce_long": {
+        "color": "#ff0000",
+        "type": "line"
+        }
+    },
+    "subplots": {
+        "predictions": {
+        "&s-gain": {
+            "color": "#ffffff",
+            "type": "line"
+        },
+        "target_profit": {
+            "color": "#00ff66",
+            "type": "line"
+        },
+        "target_loss": {
+            "color": "#ff0000",
+            "type": "line"
+        }
+        },
+        "guards": {
+        "%%-guard_metric": {
+            "color": "#7dc990"
+        }
+        },
+        "bullish": {
+        "bullish": {
+            "color": "#0b582c"
+        }
+        },
+        "squeeze": {
+        "squeeze": {
+            "color": "#34bc0b"
+        }
+        }
+    }
+    }
     
     def leverage(self, pair: str, current_time: datetime, current_rate: float,
                  proposed_leverage: float, max_leverage: float, entry_tag: Optional[str], 
@@ -604,6 +644,10 @@ class jebana_FE(IStrategy):
         
         # NaN Werte bereinigen
         df['&s-gain'] = df['&s-gain'].fillna(0.0)
+
+        print(df['&s-gain'].describe())
+        print(np.corrcoef(df["close"].shift(1).fillna(0), df["&s-gain"].fillna(0))[0,1])
+        print(df['&s-gain'].hist())
         
         return df
     
@@ -643,6 +687,8 @@ class jebana_FE(IStrategy):
         
         # FreqAI Vorhersage-Spalte (wird automatisch von FreqAI erstellt)
         prediction_col = '&s-gain'
+        print("Prediction Column:")
+        print(df[prediction_col].describe())
 
         # Target-Berechnung auf Basis realisierter Gewinne (analog NNPredict)
         profit_nstd = float(self.ts_n_profit_std.value)
