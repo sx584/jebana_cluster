@@ -141,7 +141,7 @@
         "enable_openapi": false,
         "jwt_secret_key": "6257019c2b90860a4efb384c22dd4b9ee85eb3e13df7dcb050ff08cfc6c73f4f",
         "ws_token": "4kBHv2fRCMcuRb1WT7qft2MeyEdp86yCM7zY8yxuYIuXIkfr5W79UuEzRDx3ketE",
-        "CORS_origins": [],
+        "CORS_origins": ["http://localhost:6868"],
         "username": "sex",
         "password": "lord"
     },

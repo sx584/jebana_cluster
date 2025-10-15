@@ -12,7 +12,7 @@ from datetime import timedelta
 from functools import lru_cache, reduce
 import os
 import logging
-from typing import Optional, Dict, Any
+from typing import Optional, Dict, Any, Union
 from pandas import DataFrame, Series
 
 # FreqAI Imports
@@ -33,8 +33,18 @@ log = logging.getLogger(__name__)
 class jebana_FE(IStrategy):
     
     # Hyperoptbare Parameter (aus der ursprünglichen jebana)
-    ts_n_profit_std = DecimalParameter(0.0, 3.0, decimals=2, default=1.0, space="buy")
+    ts_n_profit_std = DecimalParameter(0.0, 3.0, decimals=2, default=1.5, space="buy")
     ts_n_loss_std = DecimalParameter(0.0, 3.0, decimals=2, default=1.0, space="buy")
+    
+    # Kalibrierungsvorgaben für Prediction/Threshold-Amplituden
+    calib_win = IntParameter(20, 200, default=64, space="buy")
+    calib_gamma_min = DecimalParameter(0.50, 1.00, decimals=2, default=0.70, space="buy")
+    calib_gamma_max = DecimalParameter(1.00, 1.80, decimals=2, default=1.30, space="buy")
+    
+    # Quantilschwelle: robustere Anhebung der Gewinnschwelle (Blend zwischen mean+N*std und Quantil)
+    qth_enable = CategoricalParameter([True, False], default=True, space="buy")
+    qth_quantile = DecimalParameter(0.60, 0.95, decimals=2, default=0.75, space="buy")
+    qth_blend = DecimalParameter(0.0, 1.0, decimals=2, default=0.5, space="buy")
     
     # Chandelier-Parameter
     ce_len = IntParameter(low=10, high=50, default=22, space='sell')
@@ -43,7 +53,7 @@ class jebana_FE(IStrategy):
 
     # MOM Parameter
     # Momentum-Entry (Long)
-    mom_enable    = CategoricalParameter([True, False], default=True, space="buy")
+    mom_enable    = CategoricalParameter([True, False], default=False, space="buy")
     mom_roc_win   = IntParameter(1, 6, default=3, space="buy")             # Fenster für ROC
     mom_min_roc   = DecimalParameter(0.05, 1.50, default=0.25, decimals=2, space="buy")  # % über mom_roc_win
     mom_min_bbexp = DecimalParameter(0.00, 0.50, default=0.10, decimals=2, space="buy")  # min. BB-Expansion (relativ)
@@ -77,7 +87,7 @@ class jebana_FE(IStrategy):
     enable_bb_check = CategoricalParameter([True, False], default=False, space="buy")
     enable_squeeze = CategoricalParameter([True, False], default=False, space="buy")
     
-    entry_guard_metric = DecimalParameter(-0.8, -0.2, default=-0.2, decimals=1, space="buy")
+    entry_guard_metric = DecimalParameter(-0.8, -0.2, default=-0.1, decimals=1, space="buy")
     entry_bb_width = DecimalParameter(0.020, 0.100, default=0.02, decimals=3, space="buy")
     entry_bb_factor = DecimalParameter(0.70, 1.20, default=1.1, decimals=2, space="buy")
 
@@ -86,6 +96,8 @@ class jebana_FE(IStrategy):
     # Mindestschranken analog NNPredict
     cexit_min_profit_th = DecimalParameter(0.0, 1.5, default=0.7, decimals=1, space="buy")
     cexit_min_loss_th = DecimalParameter(-1.5, -0.0, default=-0.4, decimals=1, space="sell")
+
+    cooldown_period = IntParameter(0, 144, default=36, space='protection', optimize=True, load=True)
     
     # Spaltenmapping
     col_date = "date"
@@ -106,6 +118,13 @@ class jebana_FE(IStrategy):
     plot_config = {
     "main_plot": {
         "ce_long": {
+        "color": "#ff0000",
+        "type": "line"
+        },
+        "atr_long_tp1": {
+        "color": "#95a362"
+        },
+        "atr_long_sl": {
         "color": "#ff0000",
         "type": "line"
         }
@@ -130,18 +149,23 @@ class jebana_FE(IStrategy):
             "color": "#7dc990"
         }
         },
-        "bullish": {
-        "bullish": {
-            "color": "#0b582c"
-        }
-        },
-        "squeeze": {
-        "squeeze": {
-            "color": "#34bc0b"
-        }
-        }
+        "mom": {}
     }
     }
+
+    @property
+    def protections(self):
+        return [
+            {"method": "CooldownPeriod", "stop_duration_candles": self.cooldown_period.value},
+            # {
+            #     "method": "MaxDrawdown",
+            #     "lookback_period_candles": 48,
+            #     "trade_limit": 20,
+            #     "stop_duration_candles": 4,
+            #     "max_allowed_drawdown": 0.2,
+            # },
+
+        ]
     
     def leverage(self, pair: str, current_time: datetime, current_rate: float,
                  proposed_leverage: float, max_leverage: float, entry_tag: Optional[str], 
@@ -645,9 +669,9 @@ class jebana_FE(IStrategy):
         # NaN Werte bereinigen
         df['&s-gain'] = df['&s-gain'].fillna(0.0)
 
-        print(df['&s-gain'].describe())
-        print(np.corrcoef(df["close"].shift(1).fillna(0), df["&s-gain"].fillna(0))[0,1])
-        print(df['&s-gain'].hist())
+        # print(df['&s-gain'].describe())
+        # print(np.corrcoef(df["close"].shift(1).fillna(0), df["&s-gain"].fillna(0))[0,1])
+        # print(df['&s-gain'].hist())
         
         return df
     
@@ -687,8 +711,8 @@ class jebana_FE(IStrategy):
         
         # FreqAI Vorhersage-Spalte (wird automatisch von FreqAI erstellt)
         prediction_col = '&s-gain'
-        print("Prediction Column:")
-        print(df[prediction_col].describe())
+        print(f"Prediction Column std for {metadata['pair']}:")
+        print(df[prediction_col].std())
 
         # Target-Berechnung auf Basis realisierter Gewinne (analog NNPredict)
         profit_nstd = float(self.ts_n_profit_std.value)
@@ -707,6 +731,18 @@ class jebana_FE(IStrategy):
             + profit_nstd * realized_profit.rolling(win_size, min_periods=win_size).std(ddof=0)
         )
 
+        # Optional: robuste Quantilschwelle einkalkulieren und mit klassischer Schwelle blenden
+        if bool(self.qth_enable.value):
+            try:
+                q = float(self.qth_quantile.value)
+            except Exception:
+                q = 0.75
+            q = min(max(q, 0.50), 0.99)
+            q_series = realized_profit.rolling(win_size, min_periods=win_size).quantile(q)
+            blend = float(self.qth_blend.value)
+            blend = min(max(blend, 0.0), 1.0)
+            df["target_profit"] = (1.0 - blend) * df["target_profit"] + blend * q_series
+
         df["target_loss"] = (
             realized_loss.rolling(win_size, min_periods=win_size).mean()
             - loss_nstd * realized_loss.rolling(win_size, min_periods=win_size).std(ddof=0).abs()
@@ -715,6 +751,23 @@ class jebana_FE(IStrategy):
         # Mindestschranken übernehmen (wie NNPredict)
         df["target_profit"] = df["target_profit"].clip(lower=float(self.cexit_min_profit_th.value))
         df["target_loss"] = df["target_loss"].clip(upper=float(self.cexit_min_loss_th.value))
+
+        # --- Kalibrierung der Zielschwelle via Rolling-Std-Ratio ---
+        # Ziel: Amplitude der Predictions und der realisierten Profite angleichen,
+        #       damit Threshold-Crossings nicht künstlich ausgebremst werden.
+        try:
+            cw = int(self.calib_win.value)
+        except Exception:
+            cw = 64
+        if cw and cw > 4:
+            pred_std = df[prediction_col].rolling(cw, min_periods=cw).std(ddof=0)
+            real_std = realized_profit.rolling(cw, min_periods=cw).std(ddof=0)
+            gamma = (pred_std / real_std.replace(0.0, np.nan)).replace([np.inf, -np.inf], np.nan).fillna(1.0)
+            gamma = gamma.clip(lower=float(self.calib_gamma_min.value), upper=float(self.calib_gamma_max.value))
+
+            # Optional: Rohwert behalten für Diagnose
+            df["target_profit_raw"] = df["target_profit"]
+            df["target_profit"] = (df["target_profit"] * gamma).clip(lower=float(self.cexit_min_profit_th.value))
         
         # Entry-Bedingungen
         conditions = []
@@ -722,38 +775,42 @@ class jebana_FE(IStrategy):
         # Volumen-Check
         conditions.append(df["volume"] > 1.0)
 
-        # Momentum-Features
-        roc_n = int(self.mom_roc_win.value)
-        df['%-roc_mom'] = 100.0 * (df['close'] / df['close'].shift(roc_n) - 1.0)
+        # Momentum-Features nur wenn mom_enable = True
+        if self.mom_enable.value:
+            roc_n = int(self.mom_roc_win.value)
+            df['%-roc_mom'] = 100.0 * (df['close'] / df['close'].shift(roc_n) - 1.0)
 
-        # Bollinger-Band-Expansion (prozentuale Änderung)
-        df['%-bb_exp'] = df['%%-bb_width'].pct_change().replace([np.inf, -np.inf], 0.0).fillna(0.0)
+            # Bollinger-Band-Expansion (prozentuale Änderung)
+            df['%-bb_exp'] = df['%%-bb_width'].pct_change().replace([np.inf, -np.inf], 0.0).fillna(0.0)
 
-        # Volumen-Relativierung
-        _basevol = df['volume'].rolling(20).mean().replace(0, 1e-9)
-        df['%-vol_spike'] = df['volume'] / _basevol
-        
-        don_break = df['close'] > df['%%-dc_upper']
+            # Volumen-Relativierung
+            _basevol = df['volume'].rolling(20).mean().replace(0, 1e-9)
+            df['%-vol_spike'] = df['volume'] / _basevol
+            
+            don_break = df['close'] > df['%%-dc_upper']
 
-        mom_conditions = (
-            (df['%-roc_mom'] >= float(self.mom_min_roc.value)) &
-            (df['%-bb_exp']  >= float(self.mom_min_bbexp.value)) &
-            (df['%-vol_spike'] >= float(self.mom_vol_mult.value)) &
-            (don_break if self.mom_use_donch.value else (df['close'] > df['ce_long']))  # Alternativ: Chandelier-Gate
-        )
+            mom_conditions = (
+                (df['%-roc_mom'] >= float(self.mom_min_roc.value)) &
+                # (df['%-bb_exp']  >= float(self.mom_min_bbexp.value)) &
+                # (df['%-vol_spike'] >= float(self.mom_vol_mult.value)) &
+                (don_break if self.mom_use_donch.value else (df['close'] > df['ce_long']))  # Alternativ: Chandelier-Gate
+            )
 
-        if self.mom_gate_model.value:
-            mom_conditions &= (df[prediction_col] >= df['target_profit'])
+            if self.mom_gate_model.value:
+                mom_conditions &= (df[prediction_col] >= df['target_profit'])
 
-        conditions.append(mom_conditions)
+            conditions.append(mom_conditions)
 
-        # Buy region kombinieren (für Plotting)
-        df.loc[mom_conditions, "buy_region"] = 1
+            # Buy region kombinieren (für Plotting)
+            df.loc[mom_conditions, "buy_region"] = 1
+        else:
+            # Wenn mom_enable = False, setze buy_region auf 0
+            df.loc[:, "buy_region"] = 0
 
         # Model triggers mit MOM-Conditions
         model_cond = (
-            # (df["buy_region"] > 0)
-            # & 
+            (df['close'] > df['ce_long'])
+            & 
             qtpylib.crossed_above(df[prediction_col], df["target_profit"])
         )
 
@@ -981,8 +1038,8 @@ class jebana_FE(IStrategy):
                 c = row.iloc[-1].squeeze()
                 short_sl = c['close'] + (float(c['atr']) * float(self.ce_mult.value))
                 long_sl = c['close'] - (float(c['atr']) * float(self.ce_mult.value))
-                short_tp1 = c['close'] + (float(c['atr']) * float(self.ce_mult.value) * float(self.rr_target.value))
-                long_tp1 = c['close'] - (float(c['atr']) * float(self.ce_mult.value) * float(self.rr_target.value))
+                short_tp1 = c['close'] - (float(c['atr']) * float(self.ce_mult.value) * float(self.rr_target.value))
+                long_tp1 = c['close'] + (float(c['atr']) * float(self.ce_mult.value) * float(self.rr_target.value))
 
                 if trade.is_short:
                     tp1  = float(short_tp1)
@@ -994,12 +1051,14 @@ class jebana_FE(IStrategy):
                 trade.set_custom_data(key='tp1_price', value=tp1)
                 trade.set_custom_data(key='init_sl_abs', value=sl_a)
                 trade.set_custom_data(key='tp1_done', value=False)
+                trade.set_custom_data(key='chandelier_active', value=False)
 
             # Exit-Fill? -> TP1-Flag setzen, falls Tag 'tp1'
             if getattr(order, "ft_order_side", None) == "exit":
                 tag = getattr(order, "ft_order_tag", "") or ""
                 if tag == "tp1":
                     trade.set_custom_data(key='tp1_done', value=True)
+                    trade.set_custom_data(key='tp1_placed', value=False)
 
         except Exception as e:
             self.dp.send_msg(f"order_filled error {trade.pair}: {e}")
@@ -1019,8 +1078,8 @@ class jebana_FE(IStrategy):
         signal_time = entry_time - timedelta(minutes=int(self.timeframe_minutes))
         
         signal_candle = dataframe.loc[dataframe['date'] == signal_time].iloc[-1].squeeze()
-        short_tp1 = signal_candle['close'] + (float(signal_candle['atr']) * float(self.ce_mult.value) * float(self.rr_target.value))
-        long_tp1 = signal_candle['close'] - (float(signal_candle['atr']) * float(self.ce_mult.value) * float(self.rr_target.value))
+        short_tp1 = signal_candle['close'] - (float(signal_candle['atr']) * float(self.ce_mult.value) * float(self.rr_target.value))
+        long_tp1 = signal_candle['close'] + (float(signal_candle['atr']) * float(self.ce_mult.value) * float(self.rr_target.value))
             
         if trade.is_short:
             tp1 = float(short_tp1)
@@ -1029,7 +1088,8 @@ class jebana_FE(IStrategy):
 
         # Keine Aktion, wenn bereits ein Order offen (Framework regelt das) oder TP1 schon erledigt
         tp1_done = bool(trade.get_custom_data('tp1_done', False))
-        if tp1_done:
+        tp1_placed = bool(trade.get_custom_data('tp1_placed', False))
+        if tp1_done or tp1_placed:
             return None
 
         # Long: tp1 erreicht/überschritten; Short: tp1 unterschritten/erreicht
@@ -1040,8 +1100,9 @@ class jebana_FE(IStrategy):
         if not hit:
             return None
 
-        # 50% der Position als Stake-Wert reduzieren => -0.5 * stake_amount
+        # 33% der Position als Stake-Wert reduzieren => -0.33 * stake_amount
         # (Freqtrade rechnet das sauber in Base-Amount um)
+        trade.set_custom_data(key='tp1_placed', value=True)
         return (-0.33 * float(trade.stake_amount), "tp1")
 
     def _tf_seconds(self, tf: str) -> int:
@@ -1085,28 +1146,12 @@ class jebana_FE(IStrategy):
             sub = df.tail(ch_n)
         bars_since_entry = len(sub)
 
-        # === 1) Vor TP1: initialen absoluten SL halten (und notfalls rekonstruieren) ===
+        # === 1) Vor TP1: KEIN initialer SL mehr via custom_stoploss (nur Trailing hier) ===
         if trade.nr_of_successful_exits == 0:
-            if init_sl_abs is None:
-                # Signal-Candle rekonstruieren: exakt eine TF vor dem Entry-Candle
-                sig_time = entry_ts - timedelta(seconds=self._tf_seconds(self.timeframe))
-                row = df.loc[df['date'] == sig_time]
-
-                # Fallback, falls df['date'] leicht off ist (z. B. ms-Offsets):
-                if row.empty:
-                    row = df[df['date'] <= sig_time].tail(1)
-
-                if not row.empty:
-                    c = row.iloc[-1]
-                    sl_col = 'atr_short_sl' if trade.is_short else 'atr_long_sl'
-                    if sl_col in c and pd.notna(c[sl_col]):
-                        init_sl_abs = float(c[sl_col])
-                        trade.set_custom_data('init_sl_abs', init_sl_abs)
-
-            if init_sl_abs is not None:
-                return stoploss_from_absolute(init_sl_abs, current_rate, is_short=trade.is_short, leverage=trade.leverage)
-
-            # Fallback: solange wir keinen initialen SL haben, NICHT trailen
+            return None
+        
+        # check 2: is tp1_done? if not, return None
+        if not tp1_done:
             return None
 
         # === 2) Nach TP1: Chandelier-Trail mit Arming + Guards ===
@@ -1114,6 +1159,7 @@ class jebana_FE(IStrategy):
         if after_fill and trade.nr_of_successful_exits == 1:
             be_sl = stoploss_from_open(be_plus, current_profit, is_short=trade.is_short, leverage=trade.leverage)
             self.dp.send_msg(f"TP1 done - setting BE+offset SL: {be_sl:.4f} for {pair}")
+            trade.set_custom_data(key='chandelier_active', value=True)
             return be_sl
 
         # 2b) Arming-Checks: genug Bars und genug günstige Bewegung?
@@ -1172,24 +1218,49 @@ class jebana_FE(IStrategy):
             dist = min_trail
 
         # self.dp.send_msg(f"Trailing SL activated for {pair}: {dist:.4f} (stop_abs: {stop_abs:.6f})")
+        trade.set_custom_data(key='chandelier_active', value=True)
         return dist
     
-    def custom_exit(self, pair: str, trade: Trade, current_time: datetime,
-                    current_rate: float, current_profit: float, **kwargs):
-        """Custom Exit basierend auf Risk:Reward Ratio"""
-        
-        # R:R - initiales Risiko aus ATR zur Entry-Kerze
-        df, _ = self.dp.get_analyzed_dataframe(pair, self.timeframe)
-        entry_row = df.loc[df['date'] >= trade.open_date_utc].head(1)
-        if entry_row.empty:
-            return None
-        
-        atr0 = float(entry_row['atr'].iloc[0])
-        risk_pct = (atr0 * float(self.ce_mult.value)) / float(trade.open_rate)
-        
-        if current_profit >= float(self.rr_target.value) * risk_pct and current_profit > 0:
-            return "rr_tp"
-        
+    def custom_exit(self, pair: str, trade: Trade, current_time: datetime, current_rate: float, current_profit: float, **kwargs) -> Optional[Union[str, bool]]:
+        # print("DEBUG: Called custom_exit")
+        entry_time = timeframe_to_prev_date(self.timeframe, trade.open_date_utc)
+        cur_time = timeframe_to_prev_date(self.timeframe, current_time)
+        dataframe, _ = self.dp.get_analyzed_dataframe(pair, self.timeframe)
+
+        atr_sl = trade.get_custom_data(key='atr_sl', default=None)
+
+        if (atr_sl is None): # is not
+            signal_time = entry_time - timedelta(minutes=int(self.timeframe_minutes))
+            signal_candle = dataframe.loc[dataframe['date'] == signal_time]
+            if not signal_candle.empty:
+                signal_candle = signal_candle.iloc[-1].squeeze()
+                if trade.is_short:
+                    trade.set_custom_data(key='atr_sl', value=(signal_candle['atr_short_sl']))
+                    # trade.set_custom_data(key='atr_roi', value=(signal_candle['close'] - ((signal_candle["donchian_upper"] - signal_candle["close"]) * self.risk_reward_ratio.value)))
+                    # trade.set_custom_data(key='atr_sl', value=(signal_candle['donchian_upper']))
+                else:
+                    trade.set_custom_data(key='atr_sl', value=(signal_candle['atr_long_sl']))
+                    # trade.set_custom_data(key='atr_roi', value=(signal_candle['close'] + ((signal_candle["close"] - signal_candle["donchian_lower"]) * self.risk_reward_ratio.value)))
+                    # trade.set_custom_data(key=dataframe["atr"] = pta.atr(dataframe["high"], dataframe["low"], dataframe["close"], self.atr_period.value)'atr_sl', value=(signal_candle['donchian_lower']))
+            
+            atr_sl = trade.get_custom_data(key='atr_sl', default=None)
+
+        if (cur_time > entry_time):
+            current_candle = dataframe.iloc[-1].squeeze()            
+            # Use ATR
+            if atr_sl:
+                if trade.is_short:
+                    if current_rate >= atr_sl: # Corrected for short trades
+                        return "atr_sl"
+                else:
+                    if current_rate <= atr_sl:
+                        return "atr_sl"
+            else:
+                current_profit = trade.calc_profit_ratio(current_candle['close'])
+                if current_profit >= (self.roi * self.lev.value):
+                    return "emergency roi"
+                if current_profit <= -(self.stoploss * self.lev.value):
+                    return "emergency sl"
         return None
 
 def RMI(dataframe, *, length=20, mom=5):

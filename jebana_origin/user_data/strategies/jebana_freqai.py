@@ -7,11 +7,11 @@ from datetime import datetime
 import pandas as pd
 import numpy as np
 from freqtrade.persistence import Trade
-from freqtrade.strategy import DecimalParameter, IntParameter, CategoricalParameter, stoploss_from_absolute, timeframe_to_minutes, timeframe_to_prev_date, stoploss_from_open
+from freqtrade.strategy import DecimalParameter, IntParameter, CategoricalParameter, stoploss_from_absolute, timeframe_to_minutes, timeframe_to_prev_date, stoploss_from_open, Order
 from functools import lru_cache, reduce
 import os
 import logging
-from typing import Optional, Dict, Any
+from typing import Optional, Dict, Any, Union
 from pandas import DataFrame, Series
 
 # FreqAI Imports
@@ -25,7 +25,7 @@ from finta import TA as fta
 import pywt
 import math
 import re
-from time import timedelta
+from datetime import timedelta
 
 log = logging.getLogger(__name__)
 
@@ -652,6 +652,14 @@ class jebana_freqai(IStrategy):
         # Bänder
         df['ce_long'] = df['hh'] - df['atr'] * float(self.ce_mult.value)
         df['ce_short'] = df['ll'] + df['atr'] * float(self.ce_mult.value)
+
+        # atr_sl 
+        df['atr_short_sl'] = df['close'] + (df['atr'] * float(self.ce_mult.value))
+        df['atr_long_sl'] = df['close'] - (df['atr'] * float(self.ce_mult.value))
+
+        # atr_tp1
+        df['atr_short_tp1'] = df['close'] - (df['atr'] * float(self.ce_mult.value) * float(self.rr_target.value))
+        df['atr_long_tp1'] = df['close'] + (df['atr'] * float(self.ce_mult.value) * float(self.rr_target.value))
         
         """Entry-Signale basierend auf FreqAI Vorhersagen mit Guard-Conditions"""
         
@@ -934,6 +942,51 @@ class jebana_freqai(IStrategy):
 
         return slope
     
+
+    
+    def order_filled(self, trade: Trade, order: 'Order', current_time: datetime, **kwargs) -> None:
+        # Nur defensive Checks – keine teuren Berechnungen
+        try:
+            dataframe, _ = self.dp.get_analyzed_dataframe(trade.pair, self.timeframe)
+            if dataframe is None or dataframe.empty:
+                return
+
+            # Entry-Fill? -> TP1/SL aus Signal-Candle in Trade speichern
+            if getattr(order, "ft_order_side", None) == "entry":
+                # Deine Logik nutzt die Candle VOR entry_time:
+                entry_time = timeframe_to_prev_date(self.timeframe, trade.open_date_utc)
+                signal_time = entry_time - timedelta(minutes=int(self.timeframe_minutes))
+                row = dataframe.loc[dataframe['date'] == signal_time]
+                if row is None or row.empty:
+                    return
+                c = row.iloc[-1].squeeze()
+                short_sl = c['close'] + (float(c['atr']) * float(self.atr_mult.value))
+                long_sl = c['close'] - (float(c['atr']) * float(self.atr_mult.value))
+                short_tp1 = c['close'] - (float(c['atr']) * float(self.atr_mult.value) * float(self.rr_target.value))
+                long_tp1 = c['close'] + (float(c['atr']) * float(self.atr_mult.value) * float(self.rr_target.value))
+
+                if trade.is_short:
+                    tp1  = float(short_tp1)
+                    sl_a = float(short_sl)
+                else:
+                    tp1  = float(long_tp1)
+                    sl_a = float(long_sl)
+
+                trade.set_custom_data(key='tp1_price', value=tp1)
+                trade.set_custom_data(key='init_sl_abs', value=sl_a)
+                trade.set_custom_data(key='tp1_done', value=False)
+                trade.set_custom_data(key='chandelier_active', value=False)
+
+            # Exit-Fill? -> TP1-Flag setzen, falls Tag 'tp1'
+            if getattr(order, "ft_order_side", None) == "exit":
+                tag = getattr(order, "ft_order_tag", "") or ""
+                if tag == "tp1":
+                    trade.set_custom_data(key='tp1_done', value=True)
+                    trade.set_custom_data(key='tp1_placed', value=False)
+
+        except Exception as e:
+            self.dp.send_msg(f"order_filled error {trade.pair}: {e}")
+    
     def adjust_trade_position(self, trade: Trade, current_time: datetime,
                           current_rate: float, current_profit: float,
                           min_stake: Optional[float], max_stake: float,
@@ -949,8 +1002,8 @@ class jebana_freqai(IStrategy):
         signal_time = entry_time - timedelta(minutes=int(self.timeframe_minutes))
         
         signal_candle = dataframe.loc[dataframe['date'] == signal_time].iloc[-1].squeeze()
-        short_tp1 = signal_candle['close'] + (float(signal_candle['atr']) * float(self.ce_mult.value) * float(self.rr_target.value))
-        long_tp1 = signal_candle['close'] - (float(signal_candle['atr']) * float(self.ce_mult.value) * float(self.rr_target.value))
+        short_tp1 = signal_candle['close'] - (float(signal_candle['atr']) * float(self.atr_mult.value) * float(self.rr_target.value))
+        long_tp1 = signal_candle['close'] + (float(signal_candle['atr']) * float(self.atr_mult.value) * float(self.rr_target.value))
             
         if trade.is_short:
             tp1 = float(short_tp1)
@@ -959,7 +1012,8 @@ class jebana_freqai(IStrategy):
 
         # Keine Aktion, wenn bereits ein Order offen (Framework regelt das) oder TP1 schon erledigt
         tp1_done = bool(trade.get_custom_data('tp1_done', False))
-        if tp1_done:
+        tp1_placed = bool(trade.get_custom_data('tp1_placed', False))
+        if tp1_done or tp1_placed:
             return None
 
         # Long: tp1 erreicht/überschritten; Short: tp1 unterschritten/erreicht
@@ -970,8 +1024,9 @@ class jebana_freqai(IStrategy):
         if not hit:
             return None
 
-        # 50% der Position als Stake-Wert reduzieren => -0.5 * stake_amount
+        # 33% der Position als Stake-Wert reduzieren => -0.33 * stake_amount
         # (Freqtrade rechnet das sauber in Base-Amount um)
+        trade.set_custom_data(key='tp1_placed', value=True)
         return (-0.33 * float(trade.stake_amount), "tp1")
 
     def _tf_seconds(self, tf: str) -> int:
@@ -1001,7 +1056,7 @@ class jebana_freqai(IStrategy):
         arm_r      = getattr(self, 'ch_arm_r', 0.25)    # Mind. 0.25R in Gewinnrichtung bevor Trail aktiv
 
         # === State ===
-        tp1_done    = bool(trade.get_custom_data('tp1_done', False))
+        tp1_placed    = bool(trade.get_custom_data('tp1_placed', False))
         init_sl_abs = trade.get_custom_data('init_sl_abs', None)
 
         # --- Helper: DF + Slices ---
@@ -1015,28 +1070,12 @@ class jebana_freqai(IStrategy):
             sub = df.tail(ch_n)
         bars_since_entry = len(sub)
 
-        # === 1) Vor TP1: initialen absoluten SL halten (und notfalls rekonstruieren) ===
+        # === 1) Vor TP1: KEIN initialer SL mehr via custom_stoploss (nur Trailing hier) ===
         if trade.nr_of_successful_exits == 0:
-            if init_sl_abs is None:
-                # Signal-Candle rekonstruieren: exakt eine TF vor dem Entry-Candle
-                sig_time = entry_ts - timedelta(seconds=self._tf_seconds(self.timeframe))
-                row = df.loc[df['date'] == sig_time]
-
-                # Fallback, falls df['date'] leicht off ist (z. B. ms-Offsets):
-                if row.empty:
-                    row = df[df['date'] <= sig_time].tail(1)
-
-                if not row.empty:
-                    c = row.iloc[-1]
-                    sl_col = 'atr_short_sl' if trade.is_short else 'atr_long_sl'
-                    if sl_col in c and pd.notna(c[sl_col]):
-                        init_sl_abs = float(c[sl_col])
-                        trade.set_custom_data('init_sl_abs', init_sl_abs)
-
-            if init_sl_abs is not None:
-                return stoploss_from_absolute(init_sl_abs, current_rate, is_short=trade.is_short, leverage=trade.leverage)
-
-            # Fallback: solange wir keinen initialen SL haben, NICHT trailen
+            return None
+        
+        # check 2: is tp1_done? if not, return None
+        if not tp1_placed:
             return None
 
         # === 2) Nach TP1: Chandelier-Trail mit Arming + Guards ===
@@ -1044,6 +1083,7 @@ class jebana_freqai(IStrategy):
         if after_fill and trade.nr_of_successful_exits == 1:
             be_sl = stoploss_from_open(be_plus, current_profit, is_short=trade.is_short, leverage=trade.leverage)
             self.dp.send_msg(f"TP1 done - setting BE+offset SL: {be_sl:.4f} for {pair}")
+            trade.set_custom_data(key='chandelier_active', value=True)
             return be_sl
 
         # 2b) Arming-Checks: genug Bars und genug günstige Bewegung?
@@ -1102,24 +1142,49 @@ class jebana_freqai(IStrategy):
             dist = min_trail
 
         # self.dp.send_msg(f"Trailing SL activated for {pair}: {dist:.4f} (stop_abs: {stop_abs:.6f})")
+        trade.set_custom_data(key='chandelier_active', value=True)
         return dist
     
-    def custom_exit(self, pair: str, trade: Trade, current_time: datetime,
-                    current_rate: float, current_profit: float, **kwargs):
-        """Custom Exit basierend auf Risk:Reward Ratio"""
-        
-        # R:R - initiales Risiko aus ATR zur Entry-Kerze
-        df, _ = self.dp.get_analyzed_dataframe(pair, self.timeframe)
-        entry_row = df.loc[df['date'] >= trade.open_date_utc].head(1)
-        if entry_row.empty:
-            return None
-        
-        atr0 = float(entry_row['atr'].iloc[0])
-        risk_pct = (atr0 * float(self.ce_mult.value)) / float(trade.open_rate)
-        
-        if current_profit >= float(self.rr_target.value) * risk_pct and current_profit > 0:
-            return "rr_tp"
-        
+    def custom_exit(self, pair: str, trade: Trade, current_time: datetime, current_rate: float, current_profit: float, **kwargs) -> Optional[Union[str, bool]]:
+        # print("DEBUG: Called custom_exit")
+        entry_time = timeframe_to_prev_date(self.timeframe, trade.open_date_utc)
+        cur_time = timeframe_to_prev_date(self.timeframe, current_time)
+        dataframe, _ = self.dp.get_analyzed_dataframe(pair, self.timeframe)
+
+        atr_sl = trade.get_custom_data(key='atr_sl', default=None)
+
+        if (atr_sl is None): # is not
+            signal_time = entry_time - timedelta(minutes=int(self.timeframe_minutes))
+            signal_candle = dataframe.loc[dataframe['date'] == signal_time]
+            if not signal_candle.empty:
+                signal_candle = signal_candle.iloc[-1].squeeze()
+                if trade.is_short:
+                    trade.set_custom_data(key='atr_sl', value=(signal_candle['atr_short_sl']))
+                    # trade.set_custom_data(key='atr_roi', value=(signal_candle['close'] - ((signal_candle["donchian_upper"] - signal_candle["close"]) * self.risk_reward_ratio.value)))
+                    # trade.set_custom_data(key='atr_sl', value=(signal_candle['donchian_upper']))
+                else:
+                    trade.set_custom_data(key='atr_sl', value=(signal_candle['atr_long_sl']))
+                    # trade.set_custom_data(key='atr_roi', value=(signal_candle['close'] + ((signal_candle["close"] - signal_candle["donchian_lower"]) * self.risk_reward_ratio.value)))
+                    # trade.set_custom_data(key=dataframe["atr"] = pta.atr(dataframe["high"], dataframe["low"], dataframe["close"], self.atr_period.value)'atr_sl', value=(signal_candle['donchian_lower']))
+            
+            atr_sl = trade.get_custom_data(key='atr_sl', default=None)
+
+        if (cur_time > entry_time):
+            current_candle = dataframe.iloc[-1].squeeze()            
+            # Use ATR
+            if atr_sl:
+                if trade.is_short:
+                    if current_rate >= atr_sl: # Corrected for short trades
+                        return "atr_sl"
+                else:
+                    if current_rate <= atr_sl:
+                        return "atr_sl"
+            else:
+                current_profit = trade.calc_profit_ratio(current_candle['close'])
+                if current_profit >= (self.roi * self.lev.value):
+                    return "emergency roi"
+                if current_profit <= -(self.stoploss * self.lev.value):
+                    return "emergency sl"
         return None
 
 def RMI(dataframe, *, length=20, mom=5):

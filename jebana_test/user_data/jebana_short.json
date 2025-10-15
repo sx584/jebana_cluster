@@ -1,11 +1,11 @@
 { //https://colab.research.google.com/drive/1vNWdSA93fOw4gdfW8UY5OA-ULHOPn6xI#scrollTo=dLVrJt5LSe_g
-    "max_open_trades": 10,
+    "max_open_trades": 4,
     "stake_currency": "USDT",
     "stake_amount": "unlimited",
     "tradable_balance_ratio": 0.95,
     "fiat_display_currency": "USD",
     "dry_run": true,
-    "strategy": "jebana_ATPs",
+    "strategy": "jebana_FE",
     "freqaimodel": "PyTorchLSTMRegressor",
     "dry_run_wallet": 2000,
     "timeframe": "5m",
@@ -117,6 +117,8 @@
             "learning_rate": 0.001,
             "seq_len": 64,
             "dropout": 0.2,
+            "loss": "huber",
+            "weight_decay": 0.0001,
             "hidden_size": 128,
             "num_layers": 2,
             "trainer_kwargs": {
