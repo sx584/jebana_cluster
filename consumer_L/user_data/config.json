@@ -1,4 +1,4 @@
-{ 
+{
     "max_open_trades": 10,
     "stake_currency": "USDT",
     "stake_amount": "unlimited",
@@ -94,7 +94,7 @@
         "producers": [
             {
                 "name": "jebana_origin",
-                "host": "127.0.0.1",          
+                "host": "127.0.0.1",
                 "port": 6900,
                 "secure": false,
                 "ws_token": "4kBHv2fRCMcuRb1WT7qft2MeyEdp86yCM7zY8yxuYIuXIkfr5W79UuEzRDx3ketE"

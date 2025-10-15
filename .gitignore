@@ -13,6 +13,7 @@
 
 # Re-allow ONLY strategies and top-level JSONs in user_data
 !**/user_data/strategies/
+!**/user_data/strategies/*.py
 !**/user_data/strategies/**
 !**/user_data/*.json
 
