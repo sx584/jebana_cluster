@@ -1,0 +1,57 @@
+{
+  "strategy_name": "jebana_ATP_MOMs",
+  "params": {
+    "roi": {
+      "0": 100
+    },
+    "stoploss": {
+      "stoploss": -0.99
+    },
+    "trailing": {
+      "trailing_stop": false,
+      "trailing_stop_positive": null,
+      "trailing_stop_positive_offset": 0.0,
+      "trailing_only_offset_is_reached": false
+    },
+    "max_open_trades": {
+      "max_open_trades": 10
+    },
+    "buy": {
+      "cexit_min_profit_th": 1.3,
+      "enable_bb_check": true,
+      "enable_guard_metric": false,
+      "enable_squeeze": false,
+      "entry_bb_factor": 0.75,
+      "entry_bb_width": 0.09,
+      "entry_guard_metric": -0.7,
+      "leverage_amount": 5,
+      "liq_z_win": 516,
+      "mom_enable": false,
+      "mom_gate_model": true,
+      "mom_min_bbexp": 0.31,
+      "mom_min_roc": 1.31,
+      "mom_roc_win": 1,
+      "mom_use_donch": true,
+      "mom_vol_mult": 4.46,
+      "oi_ema": 46,
+      "oi_win": 53,
+      "oi_z_win": 364,
+      "trades_ema": 8,
+      "trades_win": 89,
+      "trades_z_win": 161,
+      "ts_n_loss_std": 1.28,
+      "ts_n_profit_std": 0.96,
+      "use_liq": false,
+      "use_micro": false
+    },
+    "sell": {
+      "ce_len": 33,
+      "ce_mult": 3.42,
+      "cexit_min_loss_th": -0.3,
+      "rr_target": 2.54
+    },
+    "protection": {}
+  },
+  "ft_stratparam_v": 1,
+  "export_time": "2025-10-07 04:58:36.023955+00:00"
+}
