@@ -17,6 +17,10 @@
 !**/user_data/strategies/**
 !**/user_data/*.json
 
+# ignore config_example folders
+**/config_example/
+**/config_example/**
+
 # Ignore Python caches
 **/__pycache__/
 **/*.pyc
